@@ -12,15 +12,15 @@ title_text = "CODE SWEEPER"
 title_colors = ["red", "green", "yellow", "blue", "magenta", "cyan"]
 
 # Print the banner
-sys.stdout.write("\\n") 
+sys.stdout.write("n") 
 for color in title_colors:
     sys.stdout.write(colored(title_text, color, attrs=["bold"]))
-    sys.stdout.write("\\n")
-sys.stdout.write("\\n") 
+    sys.stdout.write("\n")
+sys.stdout.write("\n") 
 
 # Begin scanning for insecure functions..
 print("Scanning code for insecure functions..")
-time.sleep(3)\
+time.sleep(3)
 print("Here are your results:")
 
 # define a list of bad functions
@@ -34,10 +34,10 @@ bad_functions = [
     ('pickle.loads', 'loads potentially malicious data'),
     ('globals', 'returns a dictionary of global variables'),
     ('locals', 'returns a dictionary of local variables'),
-    ('vars', 'returns a dictionary of an object\\'s attributes'),
-    ('dir', 'returns a list of an object\\'s attributes'),
-    ('getattr', 'gets the value of an object\\'s attribute'),
-    ('setattr', 'sets the value of an object\\'s attribute'),
+    ('vars', 'returns a dictionary of an object\'s attributes'),
+    ('dir', 'returns a list of an object\'s attributes'),
+    ('getattr', 'gets the value of an object\'s attribute'),
+    ('setattr', 'sets the value of an object\'s attribute'),
     ('locals()', 'updates and returns a dictionary of the current local symbols'),
     ('globals()', 'updates and returns a dictionary of the current global symbols')
 ]
@@ -50,7 +50,7 @@ vulnerable_patterns = [
     'db.connect(',
     'cursor.execute(',
     'http://',
-
+]
 
 # parse the command line arguments
 parser = argparse.ArgumentParser()
@@ -66,12 +66,11 @@ with open(args.filename, 'r') as file:
             # check if the function is used in the line
             if function in line:
                 # if the function is used, print a warning
-                print(f'Line \{line_number\}: WARNING: The \{function\} function is considered dangerous because it \{description\}.')
+                print(f'Line {line_number}: WARNING: The {function} function is considered dangerous because it {description}.')
 
         # iterate over the vulnerable patterns
         for pattern in vulnerable_patterns:
             # check if the pattern is used in the line
             if pattern in line:
                 # if the pattern is used, print a warning
-                print(f'Line \{line_number\}: WARNING: The \{pattern\} pattern is considered vulnerable and should be reviewed.')
-}
+                print(f'Line {line_number}: WARNING: The {pattern} pattern is considered vulnerable and should be reviewed.')
