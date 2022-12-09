@@ -1,4 +1,5 @@
 # Made by fasthands9000 for educational purposes only.
+# Usage: python3 Code_Sweep.py -f filename.txt
 
 import argparse
 from termcolor import colored
