@@ -17,6 +17,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# Default wordlist
+DEFAULT_WORDLIST = "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-words.txt"
+
 # Real-time output and logging
 def log_and_print(message, level="info"):
     print(message)
@@ -57,11 +60,16 @@ def resolve_subdomains(subdomains):
 def scan_ports(ip):
     try:
         log_and_print(f"[*] Scanning ports for {ip}")
+        nmap_cmd = ["nmap", "-p-", "-T4", "-oG", "-", ip]
+        log_and_print(f"[*] Running Nmap command: {' '.join(nmap_cmd)}")
         result = subprocess.run(
-            ["nmap", "-p-", "-T3", "-oG", "-vv", ip],
+            nmap_cmd,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            log_and_print(f"[!] Nmap failed: {result.stderr}", "error")
+            return []
         ports = []
         for line in result.stdout.splitlines():
             if "/open/" in line:
@@ -69,8 +77,52 @@ def scan_ports(ip):
         log_and_print(f"[+] Open ports on {ip}: {ports}")
         return ports
     except Exception as e:
-        log_and_print(f"[!] Error running nmap on {ip}: {e}", "error")
+        log_and_print(f"[!] Error running Nmap on {ip}: {e}", "error")
         return []
+
+# Perform parameter fuzzing with ffuf
+def fuzz_parameters(url, wordlist):
+    log_and_print(f"[+] Starting parameter fuzzing for {url}")
+    try:
+        ffuf_cmd = [
+            "ffuf",
+            "-u", f"{url}?FUZZ=test",
+            "-w", wordlist,
+            "-mc", "200,302",  # Match successful responses
+        ]
+        log_and_print(f"[*] Running ffuf command: {' '.join(ffuf_cmd)}")
+        result = subprocess.run(
+            ffuf_cmd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            log_and_print(f"[+] Fuzzing results:\n{result.stdout}")
+            return True  # Indicate valid dynamic inputs found
+        else:
+            log_and_print(f"[!] FFUF failed: {result.stderr}", "error")
+            return False
+    except Exception as e:
+        log_and_print(f"[!] Error during fuzzing for {url}: {e}", "error")
+        return False
+
+# Run SQLMap for SQL injection testing
+def run_sqlmap(url):
+    log_and_print(f"[+] Running SQLMap on {url}")
+    try:
+        sqlmap_cmd = ["sqlmap", "-u", url, "--batch", "--level=2", "--risk=2"]
+        log_and_print(f"[*] Running SQLMap command: {' '.join(sqlmap_cmd)}")
+        result = subprocess.run(
+            sqlmap_cmd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            log_and_print(f"[+] SQLMap output:\n{result.stdout}")
+        else:
+            log_and_print(f"[!] SQLMap failed: {result.stderr}", "error")
+    except Exception as e:
+        log_and_print(f"[!] Error running SQLMap on {url}: {e}", "error")
 
 # Create Burp import file
 def create_burp_file(targets):
@@ -83,18 +135,21 @@ def create_burp_file(targets):
     except Exception as e:
         log_and_print(f"[!] Error creating Burp import file: {e}", "error")
 
-# Fuzz parameters (optional integration with ffuf)
-def fuzz_parameters(url):
-    log_and_print(f"[+] Starting parameter fuzzing for {url}")
-    try:
-        subprocess.run(["/opt/ffuf", "-u", f"{url}?FUZZ=test", "-w", "/usr/share/wordlists/SecLists/Web-Content/raft-medium-words.txt", "-mc", "200,302"])
-    except Exception as e:
-        log_and_print(f"[!] Error fuzzing parameters: {e}", "error")
-
 def main():
     parser = argparse.ArgumentParser(description="Bug bounty recon script")
     parser.add_argument("domain", help="Target domain")
+    parser.add_argument(
+        "--wordlist",
+        help=f"Specify a custom wordlist (default: {DEFAULT_WORDLIST})",
+        default=DEFAULT_WORDLIST,
+    )
     args = parser.parse_args()
+
+    # Set wordlist
+    wordlist = args.wordlist
+    if not os.path.exists(wordlist):
+        log_and_print(f"[!] Wordlist not found: {wordlist}", "error")
+        return
 
     # Enumerate subdomains
     subdomains = get_subdomains(args.domain)
@@ -113,9 +168,11 @@ def main():
     # Create Burp Suite import file
     create_burp_file(targets)
 
-    # Optional: Parameter fuzzing
+    # Perform fuzzing and SQLMap testing
     for subdomain in targets:
-        fuzz_parameters(f"http://{subdomain}")
+        url = f"http://{subdomain}"
+        if fuzz_parameters(url, wordlist):
+            run_sqlmap(url)
 
 if __name__ == "__main__":
     log_and_print("[*] Recon script started")
