@@ -135,9 +135,17 @@ def create_burp_file(targets):
     except Exception as e:
         log_and_print(f"[!] Error creating Burp import file: {e}", "error")
 
+# Sanitize domain input
+def sanitize_domain(domain):
+    """Remove URL scheme (http/https) from the domain."""
+    if domain.startswith("http://") or domain.startswith("https://"):
+        domain = domain.split("://")[1]
+    domain = domain.rstrip("/")  # Remove trailing slash if present
+    return domain
+
 def main():
     parser = argparse.ArgumentParser(description="Bug bounty recon script")
-    parser.add_argument("domain", help="Target domain")
+    parser.add_argument("domain", help="Target domain (e.g., example.com or https://example.com)")
     parser.add_argument(
         "--wordlist",
         help=f"Specify a custom wordlist (default: {DEFAULT_WORDLIST})",
@@ -151,28 +159,36 @@ def main():
         log_and_print(f"[!] Wordlist not found: {wordlist}", "error")
         return
 
-    # Enumerate subdomains
-    subdomains = get_subdomains(args.domain)
+    # Sanitize the domain
+    domain = sanitize_domain(args.domain)
 
-    # Resolve subdomains to IPs
-    resolved = resolve_subdomains(subdomains)
+    # Prompt for subdomain enumeration
+    enumerate_subdomains = input("Do you want to enumerate subdomains? (yes/no): ").strip().lower()
+    if enumerate_subdomains in ["yes", "y"]:
+        subdomains = get_subdomains(domain)
+        if subdomains:
+            resolved = resolve_subdomains(subdomains)
+            log_and_print(f"[+] Subdomain enumeration completed. Resolved {len(resolved)} subdomains.")
+    else:
+        log_and_print("[*] Skipping subdomain enumeration.")
 
-    # Scan ports for each IP
-    targets = {}
-    for subdomain, ips in resolved.items():
-        for ip in ips:
-            ports = scan_ports(ip)
-            if ports:
-                targets[subdomain] = (ips, ports)
+    # Proceed with the main domain
+    log_and_print(f"[*] Proceeding with the main domain: {domain}")
+    try:
+        ip = socket.gethostbyname(domain)
+    except socket.gaierror as e:
+        log_and_print(f"[!] Failed to resolve {domain}: {e}", "error")
+        return
 
-    # Create Burp Suite import file
-    create_burp_file(targets)
+    ports = scan_ports(ip)
 
     # Perform fuzzing and SQLMap testing
-    for subdomain in targets:
-        url = f"http://{subdomain}"
-        if fuzz_parameters(url, wordlist):
-            run_sqlmap(url)
+    url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
+    if fuzz_parameters(url, wordlist):
+        run_sqlmap(url)
+
+    # Create Burp Suite import file for the main domain
+    create_burp_file({domain: ([ip], ports)})
 
 if __name__ == "__main__":
     log_and_print("[*] Recon script started")
