@@ -85,7 +85,7 @@ def fuzz_parameters(url, wordlist):
     log_and_print(f"[+] Starting parameter fuzzing for {url}")
     try:
         ffuf_cmd = [
-            "ffuf",
+            "/opt/ffuf",
             "-u", f"{url}?FUZZ=test",
             "-w", wordlist,
             "-mc", "200,302",  # Match successful responses
