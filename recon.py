@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 import threading
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs
 from colorama import Fore, Style, init
 
 # Initialize colorama for colorized output
@@ -124,10 +124,17 @@ def fuzz_parameters(url, wordlist):
         return False
 
 # Run SQLMap for SQL injection testing
-def run_sqlmap(url):
-    log_and_print(f"[+] Running SQLMap on {url}")
+def run_sqlmap_on_parameter(url, parameter):
+    log_and_print(f"[+] Running SQLMap on parameter '{parameter}' in URL: {url}")
     try:
-        sqlmap_cmd = [SQLMAP_PATH, "-u", url, "--batch", "--level=2", "--risk=2"]
+        sqlmap_cmd = [
+            SQLMAP_PATH,
+            "-u", f"{url}",
+            "--data", f"{parameter}=test",
+            "--batch",
+            "--level=2",
+            "--risk=2",
+        ]
         log_and_print(f"[*] Running SQLMap command: {' '.join(sqlmap_cmd)}")
         result = subprocess.run(
             sqlmap_cmd,
@@ -141,13 +148,16 @@ def run_sqlmap(url):
         else:
             log_and_print(f"[!] SQLMap failed: {result.stderr}", "error")
     except Exception as e:
-        log_and_print(f"[!] Error running SQLMap on {url}: {e}", "error")
+        log_and_print(f"[!] Error running SQLMap on {url} with parameter {parameter}: {e}", "error")
 
-# Spider the website for dynamic inputs
+# Spider the website for dynamic inputs (stay in scope)
 def spider_website(base_url):
     log_and_print(f"[*] Starting spidering for {base_url}")
     visited = set()
     queue = [base_url]
+
+    parsed_base = urlparse(base_url)
+    base_scope = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
     with open(dynamic_inputs_file, "w") as f:
         while queue:
@@ -159,14 +169,23 @@ def spider_website(base_url):
                 response = requests.get(url, timeout=5)
                 soup = BeautifulSoup(response.text, "html.parser")
                 for link in soup.find_all("a", href=True):
-                    full_url = urljoin(base_url, link["href"])
-                    if full_url.startswith(base_url) and full_url not in visited:
+                    full_url = urljoin(base_scope, link["href"])
+                    if full_url.startswith(base_scope) and full_url not in visited:
                         queue.append(full_url)
 
                     # Check if the URL contains dynamic parameters
                     if "?" in full_url:
+                        params = parse_qs(urlparse(full_url).query)
                         log_and_print(f"[+] Found dynamic input: {full_url}")
                         f.write(full_url + "\n")
+
+                        # Offer to run SQLMap against the parameters
+                        for param in params.keys():
+                            user_choice = input(
+                                f"Do you want to run SQLMap on parameter '{param}' in {full_url}? (yes/no): "
+                            ).strip().lower()
+                            if user_choice in ["yes", "y"]:
+                                run_sqlmap_on_parameter(full_url, param)
             except Exception as e:
                 log_and_print(f"[!] Error spidering {url}: {e}", "error")
 
@@ -218,9 +237,6 @@ def main():
     else:
         log_and_print("[*] Skipping subdomain enumeration.")
 
-    # Prompt for SQLMap testing
-    run_sqlmap_option = input("Do you want to run SQLMap on dynamic inputs? (yes/no): ").strip().lower()
-
     # Spider the website concurrently
     url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
     threading.Thread(target=spider_website, args=(url,)).start()
@@ -235,9 +251,8 @@ def main():
 
     ports = scan_ports(ip)
 
-    # Perform fuzzing and optionally run SQLMap
-    if fuzz_parameters(url, wordlist) and run_sqlmap_option in ["yes", "y"]:
-        run_sqlmap(url)
+    # Perform fuzzing
+    fuzz_parameters(url, wordlist)
 
     # Create Burp Suite import file for the main domain
     create_burp_file({domain: ([ip], ports)})
