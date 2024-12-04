@@ -41,134 +41,163 @@ def log_and_print(message, level="info"):
         print(Fore.RED + message + Style.RESET_ALL)
         logging.error(message)
 
-# Spider the website for dynamic inputs (strictly in scope with rate limiting)
-def spider_website(base_url, auto_sqlmap=False, delay=1):
-    """
-    Crawl a website for dynamic inputs, staying strictly in scope.
-    Logs discovered inputs to a file.
-    """
-    log_and_print(f"[*] Starting spidering for {base_url} with {delay}s delay between requests")
-    visited = set()
-    dynamic_inputs = set()
-    queue = [base_url]
+# Subdomain enumeration via crt.sh
+def get_subdomains(domain):
+    try:
+        log_and_print(f"🔍 {Fore.BLUE}Enumerating subdomains for {domain}...{Style.RESET_ALL}")
+        response = requests.get(f"https://crt.sh/?q=%25.{domain}&output=json", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            subdomains = {entry["name_value"] for entry in data}
+            log_and_print(f"🌐 {Fore.CYAN}Found {len(subdomains)} subdomains.{Style.RESET_ALL}")
+            return subdomains
+    except Exception as e:
+        log_and_print(f"❌ {Fore.RED}Error fetching subdomains: {e}{Style.RESET_ALL}", "error")
+    return set()
 
-    parsed_base = urlparse(base_url)
-    base_scope = f"{parsed_base.scheme}://{parsed_base.netloc}"
+# Resolve subdomains to IPs
+def resolve_subdomains(subdomains):
+    resolved = {}
+    for subdomain in subdomains:
+        try:
+            log_and_print(f"🔗 {Fore.YELLOW}Resolving {subdomain}...{Style.RESET_ALL}")
+            answers = resolve(subdomain, "A")
+            resolved[subdomain] = [answer.address for answer in answers]
+            log_and_print(f"✅ {Fore.GREEN}{subdomain} resolved to {resolved[subdomain]}{Style.RESET_ALL}")
+        except Exception as e:
+            log_and_print(f"❌ {Fore.RED}Unable to resolve {subdomain}: {e}{Style.RESET_ALL}", "error")
+    return resolved
 
-    with open(dynamic_inputs_file, "w") as f:
-        while queue:
-            url = queue.pop(0)
-            if url in visited:
-                continue
-            visited.add(url)
+# Run Nmap to discover open ports
+def scan_ports(ip):
+    try:
+        log_and_print(f"📡 {Fore.BLUE}Scanning ports for {ip}...{Style.RESET_ALL}")
+        nmap_cmd = ["nmap", "-p-", "-T4", "-oG", "-", ip]
+        result = subprocess.run(nmap_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            log_and_print(f"❌ {Fore.RED}Nmap failed: {result.stderr}{Style.RESET_ALL}", "error")
+            return []
+        ports = []
+        for line in result.stdout.splitlines():
+            if "/open/" in line:
+                ports.extend([x.split("/")[0] for x in line.split() if "/open/" in x])
+        log_and_print(f"🔓 {Fore.CYAN}Open ports: {ports}{Style.RESET_ALL}")
+        return ports
+    except Exception as e:
+        log_and_print(f"❌ {Fore.RED}Error running Nmap: {e}{Style.RESET_ALL}", "error")
+        return []
 
-            try:
+# Spider the website for dynamic inputs
+def spider_website(base_url, delay=1):
+    try:
+        log_and_print(f"🕸️ {Fore.YELLOW}Starting spidering for {base_url} with {delay}s delay...{Style.RESET_ALL}")
+        visited = set()
+        dynamic_inputs = set()
+        queue = [base_url]
+
+        parsed_base = urlparse(base_url)
+        base_scope = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+        with open(dynamic_inputs_file, "w") as f:
+            while queue:
+                url = queue.pop(0)
+                if url in visited:
+                    continue
+                visited.add(url)
+
                 response = requests.get(url, timeout=5)
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                # Process links in the page
                 for link in soup.find_all("a", href=True):
                     full_url = urljoin(base_scope, link["href"])
                     if not full_url.startswith(base_scope):
-                        continue  # Skip URLs outside the base domain
+                        continue
                     if full_url not in visited:
                         queue.append(full_url)
 
-                    # Check for dynamic inputs
                     if "?" in full_url and full_url not in dynamic_inputs:
-                        params = parse_qs(urlparse(full_url).query)
-                        log_and_print(f"[+] Found dynamic input: {full_url}")
+                        log_and_print(f"📝 {Fore.CYAN}Found dynamic input: {full_url}{Style.RESET_ALL}")
                         dynamic_inputs.add(full_url)
                         f.write(full_url + "\n")
 
-                        # Run SQLMap if auto_sqlmap is enabled
-                        if auto_sqlmap:
-                            for param in params.keys():
-                                run_sqlmap_on_parameter(full_url, param)
-
-                # Rate limiting
                 time.sleep(delay)
+    except KeyboardInterrupt:
+        log_and_print(f"❌ {Fore.RED}Spidering interrupted by user.{Style.RESET_ALL}", "error")
+    except Exception as e:
+        log_and_print(f"❌ {Fore.RED}Error during spidering: {e}{Style.RESET_ALL}", "error")
 
-            except Exception as e:
-                log_and_print(f"[!] Error spidering {url}: {e}", "error")
+# Perform parameter fuzzing with ffuf
+def fuzz_parameters(url, wordlist):
+    try:
+        log_and_print(f"💥 {Fore.BLUE}Starting parameter fuzzing for {url}...{Style.RESET_ALL}")
+        ffuf_cmd = [FFUF_PATH, "-u", f"{url}?FUZZ=test", "-w", wordlist, "-mc", "200,302"]
+        result = subprocess.run(ffuf_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(Fore.YELLOW + "✨ FFUF results: ✨" + Style.RESET_ALL)
+            print(result.stdout)
+            log_and_print(f"✨ {Fore.CYAN}Fuzzing results logged.{Style.RESET_ALL}")
+        else:
+            log_and_print(f"❌ {Fore.RED}FFUF failed: {result.stderr}{Style.RESET_ALL}", "error")
+    except Exception as e:
+        log_and_print(f"❌ {Fore.RED}Error during fuzzing: {e}{Style.RESET_ALL}", "error")
 
 # Run SQLMap for SQL injection testing
-def run_sqlmap_on_parameter(url, parameter):
-    log_and_print(f"[+] Running SQLMap on parameter '{parameter}' in URL: {url}")
+def run_sqlmap(base_url):
     try:
-        sqlmap_cmd = [
-            SQLMAP_PATH,
-            "-u", f"{url}",
-            "--data", f"{parameter}=test",
-            "--batch",
-            "--level=2",
-            "--risk=2",
-        ]
-        log_and_print(f"[*] Running SQLMap command: {' '.join(sqlmap_cmd)}")
-        result = subprocess.run(
-            sqlmap_cmd,
-            capture_output=True,
-            text=True,
-        )
+        log_and_print(f"🛠️ {Fore.YELLOW}Running SQLMap on {base_url}...{Style.RESET_ALL}")
+        sqlmap_cmd = [SQLMAP_PATH, "-u", base_url, "--batch", "--level=2", "--risk=2"]
+        result = subprocess.run(sqlmap_cmd, capture_output=True, text=True)
         if result.returncode == 0:
             print(Fore.MAGENTA + "🔥 SQLMap Results: 🔥" + Style.RESET_ALL)
             print(result.stdout)
-            log_and_print(f"[+] SQLMap output:\n{result.stdout}")
+            log_and_print(f"🛡️ {Fore.CYAN}SQLMap results logged.{Style.RESET_ALL}")
         else:
-            log_and_print(f"[!] SQLMap failed: {result.stderr}", "error")
+            log_and_print(f"❌ {Fore.RED}SQLMap failed: {result.stderr}{Style.RESET_ALL}", "error")
     except Exception as e:
-        log_and_print(f"[!] Error running SQLMap on {url} with parameter {parameter}: {e}", "error")
-
-# Sanitize domain input
-def sanitize_domain(domain):
-    """Remove URL scheme (http/https) from the domain."""
-    if domain.startswith("http://") or domain.startswith("https://"):
-        domain = domain.split("://")[1]
-    domain = domain.rstrip("/")  # Remove trailing slash if present
-    return domain
+        log_and_print(f"❌ {Fore.RED}Error running SQLMap: {e}{Style.RESET_ALL}", "error")
 
 # Main script
 def main():
     parser = argparse.ArgumentParser(description="Bug bounty recon script")
     parser.add_argument("domain", help="Target domain (e.g., example.com or https://example.com)")
-    parser.add_argument(
-        "--wordlist",
-        help=f"Specify a custom wordlist (default: {DEFAULT_WORDLIST})",
-        default=DEFAULT_WORDLIST,
-    )
-    parser.add_argument(
-        "--auto-sqlmap",
-        help="Automatically run SQLMap on discovered parameters (default: false)",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--delay",
-        help="Set delay (in seconds) between requests to avoid rate limiting (default: 1s)",
-        type=int,
-        default=1,
-    )
+    parser.add_argument("--wordlist", default=DEFAULT_WORDLIST, help="Custom wordlist path")
+    parser.add_argument("--delay", type=int, default=1, help="Delay between requests (default: 1s)")
     args = parser.parse_args()
 
-    # Set wordlist
-    wordlist = args.wordlist
-    if not os.path.exists(wordlist):
-        log_and_print(f"[!] Wordlist not found: {wordlist}", "error")
-        return
+    domain = args.domain
 
-    # Sanitize the domain
-    domain = sanitize_domain(args.domain)
+    # Stage 1: Subdomain Enumeration
+    print(Fore.LIGHTCYAN_EX + "\n🚀 Stage 1: Subdomain Enumeration 🌐\n" + Style.RESET_ALL)
+    subdomains = get_subdomains(domain)
+    if subdomains:
+        resolve_subdomains(subdomains)
 
-    # Spider the website
-    url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
-    spider_website(url, auto_sqlmap=args.auto_sqlmap, delay=args.delay)
+    # Stage 2: Port Scanning
+    print(Fore.LIGHTCYAN_EX + "\n📡 Stage 2: Port Scanning 🔍\n" + Style.RESET_ALL)
+    try:
+        ip = socket.gethostbyname(domain)
+        scan_ports(ip)
+    except Exception as e:
+        log_and_print(f"❌ {Fore.RED}Failed to resolve or scan domain {domain}: {e}{Style.RESET_ALL}", "error")
+
+    # Stage 3: Spidering
+    print(Fore.LIGHTCYAN_EX + "\n🕸️ Stage 3: Spidering 🕷️\n" + Style.RESET_ALL)
+    base_url = f"https://{domain}" if domain.startswith("https://") else f"http://{domain}"
+    spider_website(base_url, delay=args.delay)
+
+    # Stage 4: Parameter Fuzzing
+    print(Fore.LIGHTCYAN_EX + "\n💥 Stage 4: Parameter Fuzzing 🔍\n" + Style.RESET_ALL)
+    fuzz_parameters(base_url, args.wordlist)
+
+    # Stage 5: SQLMap
+    print(Fore.LIGHTCYAN_EX + "\n🛠️ Stage 5: SQLMap Testing 🔐\n" + Style.RESET_ALL)
+    run_sqlmap(base_url)
 
 if __name__ == "__main__":
-    log_and_print("[*] Recon script started")
+    log_and_print("🔥 [*] Recon script started 🔥")
     try:
         main()
     except KeyboardInterrupt:
-        log_and_print("[!] Script interrupted by user", "error")
-    except Exception as e:
-        log_and_print(f"[!] An unexpected error occurred: {e}", "error")
+        log_and_print("❌ [!] Script interrupted by user.", "error")
     finally:
-        log_and_print("[*] Recon script completed")
+        log_and_print("🎉 [*] Recon script completed! 🎉")
