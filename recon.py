@@ -8,7 +8,6 @@ import subprocess
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
-import threading
 from urllib.parse import urlparse, urljoin, parse_qs
 from colorama import Fore, Style, init
 
@@ -150,8 +149,8 @@ def run_sqlmap_on_parameter(url, parameter):
     except Exception as e:
         log_and_print(f"[!] Error running SQLMap on {url} with parameter {parameter}: {e}", "error")
 
-# Spider the website for dynamic inputs (stay in scope)
-def spider_website(base_url):
+# Spider the website for dynamic inputs (strictly in scope)
+def spider_website(base_url, auto_sqlmap=False):
     log_and_print(f"[*] Starting spidering for {base_url}")
     visited = set()
     queue = [base_url]
@@ -170,7 +169,9 @@ def spider_website(base_url):
                 soup = BeautifulSoup(response.text, "html.parser")
                 for link in soup.find_all("a", href=True):
                     full_url = urljoin(base_scope, link["href"])
-                    if full_url.startswith(base_scope) and full_url not in visited:
+                    if not full_url.startswith(base_scope):
+                        continue  # Ensure we stay in scope
+                    if full_url not in visited:
                         queue.append(full_url)
 
                     # Check if the URL contains dynamic parameters
@@ -179,12 +180,9 @@ def spider_website(base_url):
                         log_and_print(f"[+] Found dynamic input: {full_url}")
                         f.write(full_url + "\n")
 
-                        # Offer to run SQLMap against the parameters
-                        for param in params.keys():
-                            user_choice = input(
-                                f"Do you want to run SQLMap on parameter '{param}' in {full_url}? (yes/no): "
-                            ).strip().lower()
-                            if user_choice in ["yes", "y"]:
+                        # Automatically run SQLMap if enabled
+                        if auto_sqlmap:
+                            for param in params.keys():
                                 run_sqlmap_on_parameter(full_url, param)
             except Exception as e:
                 log_and_print(f"[!] Error spidering {url}: {e}", "error")
@@ -216,6 +214,11 @@ def main():
         help=f"Specify a custom wordlist (default: {DEFAULT_WORDLIST})",
         default=DEFAULT_WORDLIST,
     )
+    parser.add_argument(
+        "--auto-sqlmap",
+        help="Automatically run SQLMap on discovered parameters (default: false)",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     # Set wordlist
@@ -237,9 +240,9 @@ def main():
     else:
         log_and_print("[*] Skipping subdomain enumeration.")
 
-    # Spider the website concurrently
+    # Spider the website concurrently with SQLMap automation if requested
     url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
-    threading.Thread(target=spider_website, args=(url,)).start()
+    spider_website(url, auto_sqlmap=args.auto_sqlmap)
 
     # Proceed with the main domain
     log_and_print(f"[*] Proceeding with the main domain: {domain}")
