@@ -1,0 +1,6 @@
+2024-12-04 11:53:29 - INFO - [*] Recon script started
+2024-12-04 11:53:29 - INFO - [*] Enumerating subdomains for https://www.farfetch.com
+2024-12-04 11:53:29 - INFO - [+] Found 0 subdomains.
+2024-12-04 11:53:29 - INFO - [*] Creating Burp Suite import file...
+2024-12-04 11:53:29 - INFO - [+] Burp Suite import file created: burp_import.json
+2024-12-04 11:53:29 - INFO - [*] Recon script completed
