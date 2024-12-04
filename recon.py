@@ -7,9 +7,17 @@ from dns.resolver import resolve
 import subprocess
 import logging
 from datetime import datetime
+from bs4 import BeautifulSoup
+import threading
+from urllib.parse import urlparse, urljoin
+from colorama import Fore, Style, init
+
+# Initialize colorama for colorized output
+init()
 
 # Configure logging
 log_file = "recon.log"
+dynamic_inputs_file = "dynamic_inputs.txt"
 logging.basicConfig(
     filename=log_file,
     level=logging.INFO,
@@ -20,12 +28,17 @@ logging.basicConfig(
 # Default wordlist
 DEFAULT_WORDLIST = "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-words.txt"
 
+# Path locations for ffuf and sqlmap
+FFUF_PATH = "/opt/ffuf"
+SQLMAP_PATH = "/usr/bin/sqlmap"
+
 # Real-time output and logging
 def log_and_print(message, level="info"):
-    print(message)
     if level == "info":
+        print(Fore.GREEN + message + Style.RESET_ALL)
         logging.info(message)
     elif level == "error":
+        print(Fore.RED + message + Style.RESET_ALL)
         logging.error(message)
 
 # Subdomain enumeration via crt.sh
@@ -85,18 +98,22 @@ def fuzz_parameters(url, wordlist):
     log_and_print(f"[+] Starting parameter fuzzing for {url}")
     try:
         ffuf_cmd = [
-            "/opt/ffuf",
+            FFUF_PATH,
             "-u", f"{url}?FUZZ=test",
             "-w", wordlist,
             "-mc", "200,302",  # Match successful responses
         ]
         log_and_print(f"[*] Running ffuf command: {' '.join(ffuf_cmd)}")
+        print(Fore.CYAN + "💥 Let's Fuzz! 🚀" + Style.RESET_ALL)
+
         result = subprocess.run(
             ffuf_cmd,
             capture_output=True,
             text=True,
         )
         if result.returncode == 0:
+            print(Fore.YELLOW + "✨ FFUF results: ✨" + Style.RESET_ALL)
+            print(result.stdout)
             log_and_print(f"[+] Fuzzing results:\n{result.stdout}")
             return True  # Indicate valid dynamic inputs found
         else:
@@ -110,7 +127,7 @@ def fuzz_parameters(url, wordlist):
 def run_sqlmap(url):
     log_and_print(f"[+] Running SQLMap on {url}")
     try:
-        sqlmap_cmd = ["sqlmap", "-u", url, "--batch", "--level=2", "--risk=2"]
+        sqlmap_cmd = [SQLMAP_PATH, "-u", url, "--batch", "--level=2", "--risk=2"]
         log_and_print(f"[*] Running SQLMap command: {' '.join(sqlmap_cmd)}")
         result = subprocess.run(
             sqlmap_cmd,
@@ -118,11 +135,40 @@ def run_sqlmap(url):
             text=True,
         )
         if result.returncode == 0:
+            print(Fore.MAGENTA + "🔥 SQLMap Results: 🔥" + Style.RESET_ALL)
+            print(result.stdout)
             log_and_print(f"[+] SQLMap output:\n{result.stdout}")
         else:
             log_and_print(f"[!] SQLMap failed: {result.stderr}", "error")
     except Exception as e:
         log_and_print(f"[!] Error running SQLMap on {url}: {e}", "error")
+
+# Spider the website for dynamic inputs
+def spider_website(base_url):
+    log_and_print(f"[*] Starting spidering for {base_url}")
+    visited = set()
+    queue = [base_url]
+
+    with open(dynamic_inputs_file, "w") as f:
+        while queue:
+            url = queue.pop(0)
+            if url in visited:
+                continue
+            visited.add(url)
+            try:
+                response = requests.get(url, timeout=5)
+                soup = BeautifulSoup(response.text, "html.parser")
+                for link in soup.find_all("a", href=True):
+                    full_url = urljoin(base_url, link["href"])
+                    if full_url.startswith(base_url) and full_url not in visited:
+                        queue.append(full_url)
+
+                    # Check if the URL contains dynamic parameters
+                    if "?" in full_url:
+                        log_and_print(f"[+] Found dynamic input: {full_url}")
+                        f.write(full_url + "\n")
+            except Exception as e:
+                log_and_print(f"[!] Error spidering {url}: {e}", "error")
 
 # Create Burp import file
 def create_burp_file(targets):
@@ -172,6 +218,13 @@ def main():
     else:
         log_and_print("[*] Skipping subdomain enumeration.")
 
+    # Prompt for SQLMap testing
+    run_sqlmap_option = input("Do you want to run SQLMap on dynamic inputs? (yes/no): ").strip().lower()
+
+    # Spider the website concurrently
+    url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
+    threading.Thread(target=spider_website, args=(url,)).start()
+
     # Proceed with the main domain
     log_and_print(f"[*] Proceeding with the main domain: {domain}")
     try:
@@ -182,9 +235,8 @@ def main():
 
     ports = scan_ports(ip)
 
-    # Perform fuzzing and SQLMap testing
-    url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
-    if fuzz_parameters(url, wordlist):
+    # Perform fuzzing and optionally run SQLMap
+    if fuzz_parameters(url, wordlist) and run_sqlmap_option in ["yes", "y"]:
         run_sqlmap(url)
 
     # Create Burp Suite import file for the main domain
