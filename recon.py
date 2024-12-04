@@ -10,6 +10,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin, parse_qs
 from colorama import Fore, Style, init
+import time  # For rate limiting
 
 # Initialize colorama for colorized output
 init()
@@ -40,87 +41,56 @@ def log_and_print(message, level="info"):
         print(Fore.RED + message + Style.RESET_ALL)
         logging.error(message)
 
-# Subdomain enumeration via crt.sh
-def get_subdomains(domain):
-    url = f"https://crt.sh/?q=%25.{domain}&output=json"
-    try:
-        log_and_print(f"[*] Enumerating subdomains for {domain}")
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            subdomains = {entry["name_value"] for entry in data}
-            log_and_print(f"[+] Found {len(subdomains)} subdomains.")
-            return subdomains
-    except Exception as e:
-        log_and_print(f"[!] Error fetching subdomains: {e}", "error")
-    return set()
+# Spider the website for dynamic inputs (strictly in scope with rate limiting)
+def spider_website(base_url, auto_sqlmap=False, delay=1):
+    """
+    Crawl a website for dynamic inputs, staying strictly in scope.
+    Logs discovered inputs to a file.
+    """
+    log_and_print(f"[*] Starting spidering for {base_url} with {delay}s delay between requests")
+    visited = set()
+    dynamic_inputs = set()
+    queue = [base_url]
 
-# Resolve subdomains to IPs
-def resolve_subdomains(subdomains):
-    resolved = {}
-    for subdomain in subdomains:
-        try:
-            log_and_print(f"[*] Resolving {subdomain}")
-            answers = resolve(subdomain, "A")
-            resolved[subdomain] = [answer.address for answer in answers]
-            log_and_print(f"[+] {subdomain} resolved to {resolved[subdomain]}")
-        except Exception as e:
-            log_and_print(f"[!] Unable to resolve {subdomain}: {e}", "error")
-    return resolved
+    parsed_base = urlparse(base_url)
+    base_scope = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
-# Run Nmap to discover open ports
-def scan_ports(ip):
-    try:
-        log_and_print(f"[*] Scanning ports for {ip}")
-        nmap_cmd = ["nmap", "-p-", "-T4", "-oG", "-", ip]
-        log_and_print(f"[*] Running Nmap command: {' '.join(nmap_cmd)}")
-        result = subprocess.run(
-            nmap_cmd,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            log_and_print(f"[!] Nmap failed: {result.stderr}", "error")
-            return []
-        ports = []
-        for line in result.stdout.splitlines():
-            if "/open/" in line:
-                ports.extend([x.split("/")[0] for x in line.split() if "/open/" in x])
-        log_and_print(f"[+] Open ports on {ip}: {ports}")
-        return ports
-    except Exception as e:
-        log_and_print(f"[!] Error running Nmap on {ip}: {e}", "error")
-        return []
+    with open(dynamic_inputs_file, "w") as f:
+        while queue:
+            url = queue.pop(0)
+            if url in visited:
+                continue
+            visited.add(url)
 
-# Perform parameter fuzzing with ffuf
-def fuzz_parameters(url, wordlist):
-    log_and_print(f"[+] Starting parameter fuzzing for {url}")
-    try:
-        ffuf_cmd = [
-            FFUF_PATH,
-            "-u", f"{url}?FUZZ=test",
-            "-w", wordlist,
-            "-mc", "200,302",  # Match successful responses
-        ]
-        log_and_print(f"[*] Running ffuf command: {' '.join(ffuf_cmd)}")
-        print(Fore.CYAN + "💥 Let's Fuzz! 🚀" + Style.RESET_ALL)
+            try:
+                response = requests.get(url, timeout=5)
+                soup = BeautifulSoup(response.text, "html.parser")
 
-        result = subprocess.run(
-            ffuf_cmd,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(Fore.YELLOW + "✨ FFUF results: ✨" + Style.RESET_ALL)
-            print(result.stdout)
-            log_and_print(f"[+] Fuzzing results:\n{result.stdout}")
-            return True  # Indicate valid dynamic inputs found
-        else:
-            log_and_print(f"[!] FFUF failed: {result.stderr}", "error")
-            return False
-    except Exception as e:
-        log_and_print(f"[!] Error during fuzzing for {url}: {e}", "error")
-        return False
+                # Process links in the page
+                for link in soup.find_all("a", href=True):
+                    full_url = urljoin(base_scope, link["href"])
+                    if not full_url.startswith(base_scope):
+                        continue  # Skip URLs outside the base domain
+                    if full_url not in visited:
+                        queue.append(full_url)
+
+                    # Check for dynamic inputs
+                    if "?" in full_url and full_url not in dynamic_inputs:
+                        params = parse_qs(urlparse(full_url).query)
+                        log_and_print(f"[+] Found dynamic input: {full_url}")
+                        dynamic_inputs.add(full_url)
+                        f.write(full_url + "\n")
+
+                        # Run SQLMap if auto_sqlmap is enabled
+                        if auto_sqlmap:
+                            for param in params.keys():
+                                run_sqlmap_on_parameter(full_url, param)
+
+                # Rate limiting
+                time.sleep(delay)
+
+            except Exception as e:
+                log_and_print(f"[!] Error spidering {url}: {e}", "error")
 
 # Run SQLMap for SQL injection testing
 def run_sqlmap_on_parameter(url, parameter):
@@ -149,55 +119,6 @@ def run_sqlmap_on_parameter(url, parameter):
     except Exception as e:
         log_and_print(f"[!] Error running SQLMap on {url} with parameter {parameter}: {e}", "error")
 
-# Spider the website for dynamic inputs (strictly in scope)
-def spider_website(base_url, auto_sqlmap=False):
-    log_and_print(f"[*] Starting spidering for {base_url}")
-    visited = set()
-    queue = [base_url]
-
-    parsed_base = urlparse(base_url)
-    base_scope = f"{parsed_base.scheme}://{parsed_base.netloc}"
-
-    with open(dynamic_inputs_file, "w") as f:
-        while queue:
-            url = queue.pop(0)
-            if url in visited:
-                continue
-            visited.add(url)
-            try:
-                response = requests.get(url, timeout=5)
-                soup = BeautifulSoup(response.text, "html.parser")
-                for link in soup.find_all("a", href=True):
-                    full_url = urljoin(base_scope, link["href"])
-                    if not full_url.startswith(base_scope):
-                        continue  # Ensure we stay in scope
-                    if full_url not in visited:
-                        queue.append(full_url)
-
-                    # Check if the URL contains dynamic parameters
-                    if "?" in full_url:
-                        params = parse_qs(urlparse(full_url).query)
-                        log_and_print(f"[+] Found dynamic input: {full_url}")
-                        f.write(full_url + "\n")
-
-                        # Automatically run SQLMap if enabled
-                        if auto_sqlmap:
-                            for param in params.keys():
-                                run_sqlmap_on_parameter(full_url, param)
-            except Exception as e:
-                log_and_print(f"[!] Error spidering {url}: {e}", "error")
-
-# Create Burp import file
-def create_burp_file(targets):
-    try:
-        log_and_print("[*] Creating Burp Suite import file...")
-        with open("burp_import.json", "w") as f:
-            data = [{"host": host, "ip": ips, "ports": ports} for host, (ips, ports) in targets.items()]
-            json.dump(data, f, indent=4)
-        log_and_print(f"[+] Burp Suite import file created: burp_import.json")
-    except Exception as e:
-        log_and_print(f"[!] Error creating Burp import file: {e}", "error")
-
 # Sanitize domain input
 def sanitize_domain(domain):
     """Remove URL scheme (http/https) from the domain."""
@@ -206,6 +127,7 @@ def sanitize_domain(domain):
     domain = domain.rstrip("/")  # Remove trailing slash if present
     return domain
 
+# Main script
 def main():
     parser = argparse.ArgumentParser(description="Bug bounty recon script")
     parser.add_argument("domain", help="Target domain (e.g., example.com or https://example.com)")
@@ -219,6 +141,12 @@ def main():
         help="Automatically run SQLMap on discovered parameters (default: false)",
         action="store_true",
     )
+    parser.add_argument(
+        "--delay",
+        help="Set delay (in seconds) between requests to avoid rate limiting (default: 1s)",
+        type=int,
+        default=1,
+    )
     args = parser.parse_args()
 
     # Set wordlist
@@ -230,35 +158,9 @@ def main():
     # Sanitize the domain
     domain = sanitize_domain(args.domain)
 
-    # Prompt for subdomain enumeration
-    enumerate_subdomains = input("Do you want to enumerate subdomains? (yes/no): ").strip().lower()
-    if enumerate_subdomains in ["yes", "y"]:
-        subdomains = get_subdomains(domain)
-        if subdomains:
-            resolved = resolve_subdomains(subdomains)
-            log_and_print(f"[+] Subdomain enumeration completed. Resolved {len(resolved)} subdomains.")
-    else:
-        log_and_print("[*] Skipping subdomain enumeration.")
-
-    # Spider the website concurrently with SQLMap automation if requested
+    # Spider the website
     url = f"https://{domain}" if args.domain.startswith("https://") else f"http://{domain}"
-    spider_website(url, auto_sqlmap=args.auto_sqlmap)
-
-    # Proceed with the main domain
-    log_and_print(f"[*] Proceeding with the main domain: {domain}")
-    try:
-        ip = socket.gethostbyname(domain)
-    except socket.gaierror as e:
-        log_and_print(f"[!] Failed to resolve {domain}: {e}", "error")
-        return
-
-    ports = scan_ports(ip)
-
-    # Perform fuzzing
-    fuzz_parameters(url, wordlist)
-
-    # Create Burp Suite import file for the main domain
-    create_burp_file({domain: ([ip], ports)})
+    spider_website(url, auto_sqlmap=args.auto_sqlmap, delay=args.delay)
 
 if __name__ == "__main__":
     log_and_print("[*] Recon script started")
