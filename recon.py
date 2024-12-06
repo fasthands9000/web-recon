@@ -2,22 +2,18 @@ import os
 import requests
 import socket
 import argparse
-import json
-from dns.resolver import resolve
 import subprocess
 import logging
-from datetime import datetime
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin, parse_qs
 from colorama import Fore, Style, init
-import time
 
 # Initialize colorama for colorized output
 init()
 
 # Configure logging
 log_file = "recon.log"
-dynamic_inputs_file = "dynamic_inputs.txt"
+dynamic_inputs_file = "dynamic_inputs_burp.txt"
 logging.basicConfig(
     filename=log_file,
     level=logging.INFO,
@@ -25,10 +21,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# Default wordlist
+# Default settings
 DEFAULT_WORDLIST = "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-words.txt"
+DEFAULT_RESPONSE_CODES = "200,301,302,303,304,305,306,307"
+DEFAULT_THREADS = 10
 
-# Path locations for ffuf and sqlmap
+# Paths
 FFUF_PATH = "/opt/ffuf"
 SQLMAP_PATH = "/opt/sqlmap/sqlmap.py"
 
@@ -41,11 +39,14 @@ def log_and_print(message, level="info"):
         print(Fore.RED + message + Style.RESET_ALL)
         logging.error(message)
 
-# Handle user interruption
+# Display a warning at the start of the script
+def display_warning():
+    print(Fore.RED + "⚠️ WARNING: This tool is made for educational purposes only.")
+    print("Use at your own risk. Unauthorized use against systems you don't own is illegal.")
+    print("Stupid actions reap serious consequences." + Style.RESET_ALL)
+
+# Handle user interruption gracefully
 def handle_interrupt(stage_name):
-    """
-    Handle Ctrl+C interrupts during any phase.
-    """
     print(Fore.YELLOW + f"\n🛑 {stage_name} interrupted! What would you like to do? " + Style.RESET_ALL)
     print("[s] Skip this phase")
     print("[x] Exit the script")
@@ -77,56 +78,67 @@ def user_prompt(stage_name):
 
 # Sanitize domain input
 def sanitize_domain(domain):
-    """Extract the domain without protocol (http/https)."""
     parsed_url = urlparse(domain)
     return parsed_url.netloc if parsed_url.netloc else domain
 
-# Subdomain enumeration via crt.sh with retry logic
-def get_subdomains(domain, retries=3):
-    url = f"https://crt.sh/?q=%25.{domain}&output=json"
-    for attempt in range(retries):
-        try:
-            log_and_print(f"🔍 Enumerating subdomains for {domain} (attempt {attempt + 1}/{retries})...")
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                subdomains = {entry["name_value"] for entry in data}
-                log_and_print(f"🌐 Found {len(subdomains)} subdomains.")
-                return subdomains
-        except Exception as e:
-            log_and_print(f"❌ Error fetching subdomains: {e}", "error")
-        time.sleep(2)  # Wait before retrying
-    return set()
-
-# Resolve domain to IP
-def resolve_domain(domain):
+# Port Scanning with Nmap
+def scan_ports(domain):
     try:
-        log_and_print(f"🔗 Resolving {domain}...")
-        ip = socket.gethostbyname(domain)
-        log_and_print(f"✅ {domain} resolved to {ip}")
-        return ip
-    except socket.gaierror as e:
-        log_and_print(f"❌ Failed to resolve domain {domain}: {e}", "error")
-        return None
-
-# Run Nmap to discover open ports
-def scan_ports(ip):
-    try:
-        log_and_print(f"📡 Scanning ports for {ip}...")
-        nmap_cmd = ["nmap", "-p-", "-T4", "-oG", "-", ip]
+        log_and_print(f"📡 Scanning ports for {domain}...")
+        nmap_cmd = ["nmap", "-p-", "-T4", "-oG", "-", domain]
         result = subprocess.run(nmap_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             log_and_print(f"❌ Nmap failed: {result.stderr}", "error")
             return []
-        ports = []
+
+        open_ports = []
         for line in result.stdout.splitlines():
             if "/open/" in line:
-                ports.extend([x.split("/")[0] for x in line.split() if "/open/" in x])
-        log_and_print(f"🔓 Open ports: {ports}")
-        return ports
+                open_ports.extend([x.split("/")[0] for x in line.split() if "/open/" in x])
+
+        if open_ports:
+            log_and_print(f"🔓 Open ports: {open_ports}")
+        else:
+            log_and_print("❌ No open ports found.", "error")
+
+        return open_ports
     except Exception as e:
-        log_and_print(f"❌ Error running Nmap: {e}", "error")
+        log_and_print(f"❌ Error during port scanning: {e}", "error")
         return []
+
+# Subdomain Enumeration using ffuf
+def enumerate_subdomains(domain, wordlist, response_codes, threads):
+    try:
+        log_and_print(f"🔍 Enumerating subdomains for {domain} using ffuf with {threads} threads...")
+        ffuf_cmd = [
+            FFUF_PATH,
+            "-u", f"https://FUZZ.{domain}",
+            "-w", wordlist,
+            "-mc", response_codes,
+            "-t", str(threads),
+            "-v"
+        ]
+        subprocess.run(ffuf_cmd)  # Live output with no capture for visibility
+    except KeyboardInterrupt:
+        if handle_interrupt("Subdomain Enumeration") == "skip":
+            return []
+
+# Directory Enumeration using ffuf
+def enumerate_directories(base_url, wordlist, response_codes, threads):
+    try:
+        log_and_print(f"🔍 Enumerating directories for {base_url} using ffuf with {threads} threads...")
+        ffuf_cmd = [
+            FFUF_PATH,
+            "-u", f"{base_url}/FUZZ",
+            "-w", wordlist,
+            "-mc", response_codes,
+            "-t", str(threads),
+            "-v"
+        ]
+        subprocess.run(ffuf_cmd)  # Live output with no capture for visibility
+    except KeyboardInterrupt:
+        if handle_interrupt("Directory Enumeration") == "skip":
+            return []
 
 # Spider the website for dynamic inputs
 def spider_website(base_url, delay=1, max_sites=10):
@@ -167,20 +179,12 @@ def spider_website(base_url, delay=1, max_sites=10):
                             log_and_print(f"📝 Found dynamic input: {full_url}")
                             dynamic_inputs.add(full_url)
                             f.write(full_url + "\n")
-
-                    time.sleep(delay)
-
                 except KeyboardInterrupt:
-                    action = handle_interrupt("Spidering")
-                    if action == "skip":
+                    if handle_interrupt("Spidering") == "skip":
                         return
                 except Exception as e:
                     log_and_print(f"❌ Error fetching {url}: {e}", "error")
 
-    except KeyboardInterrupt:
-        action = handle_interrupt("Spidering")
-        if action == "skip":
-            return
     except Exception as e:
         log_and_print(f"❌ Error during spidering: {e}", "error")
 
@@ -201,33 +205,41 @@ def run_sqlmap(base_url):
 
 # Main script
 def main():
-    parser = argparse.ArgumentParser(description="Bug bounty recon script")
+    parser = argparse.ArgumentParser(
+        description="Bug bounty recon script",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+
     parser.add_argument("domain", help="Target domain (e.g., example.com or https://example.com)")
-    parser.add_argument("--wordlist", default=DEFAULT_WORDLIST, help="Custom wordlist path")
-    parser.add_argument("--delay", type=int, default=1, help="Delay between requests (default: 1s)")
+    parser.add_argument("--wordlist", default=DEFAULT_WORDLIST, help="Path to the wordlist (default: SecLists raft-medium-words.txt)")
+    parser.add_argument("--response-codes", default=DEFAULT_RESPONSE_CODES, help="Comma-separated HTTP response codes to match")
+    parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="Number of threads to use for ffuf")
+    parser.add_argument("--delay", type=int, default=1, help="Delay between requests in seconds")
+    
     args = parser.parse_args()
 
+    display_warning()
     domain = sanitize_domain(args.domain)
 
-    # Stage 1: Subdomain Enumeration
-    if user_prompt("Subdomain Enumeration"):
-        subdomains = get_subdomains(domain)
-        if subdomains:
-            for sub in subdomains:
-                log_and_print(f"🔹 Subdomain: {sub}")
-
-    # Stage 2: Port Scanning
+    # Stage 1: Port Scanning
     if user_prompt("Port Scanning"):
-        ip = resolve_domain(domain)
-        if ip:
-            scan_ports(ip)
+        scan_ports(domain)
 
-    # Stage 3: Spidering
+    # Stage 2: Subdomain Enumeration
+    if user_prompt("Subdomain Enumeration"):
+        enumerate_subdomains(domain, args.wordlist, args.response_codes, args.threads)
+
+    # Stage 3: Directory Enumeration
+    if user_prompt("Directory Enumeration"):
+        base_url = f"https://{domain}"
+        enumerate_directories(base_url, args.wordlist, args.response_codes, args.threads)
+
+    # Stage 4: Spidering
     if user_prompt("Spidering"):
         base_url = f"https://{domain}"
-        spider_website(base_url, delay=args.delay, max_sites=10)
+        spider_website(base_url, delay=args.delay)
 
-    # Stage 4: SQLMap Testing
+    # Stage 5: SQLMap Testing
     if user_prompt("SQLMap Testing"):
         base_url = f"https://{domain}"
         run_sqlmap(base_url)
