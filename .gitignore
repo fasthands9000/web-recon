@@ -1,0 +1,91 @@
+# ========================================================
+# Operating System Files
+# ========================================================
+.DS_Store                # macOS Finder files
+Thumbs.db                # Windows thumbnail cache
+ehthumbs.db              # Windows Explorer cache
+desktop.ini              # Windows Explorer config
+
+# ========================================================
+# Temporary and Backup Files
+# ========================================================
+*.swp                    # Vim swap files
+*.swo                    # Vim temporary files
+*.bak                    # Backup files
+*.tmp                    # Temporary files
+*.~                      # Temporary files
+*.log                    # Log files
+
+# ========================================================
+# System-Specific Files
+# ========================================================
+/lost+found              # Linux lost+found directory
+*.lock                   # Lock files
+
+# ========================================================
+# Build and Compiled Files
+# ========================================================
+*.o                      # Compiled object files
+*.out                    # Compiled binary files
+*.class                  # Java class files
+*.pyc                    # Python compiled files
+*.pyo                    # Python optimized files
+*.so                     # Shared object files
+
+# ========================================================
+# VS Code Specific
+# ========================================================
+.vscode/                 # VS Code settings folder (project-specific)
+*.code-workspace         # VS Code workspace settings
+*.history/               # Local History extension files (if installed)
+.settings/               # Eclipse workspace settings (rarely used with VS Code)
+
+# ========================================================
+# Node.js Specific
+# ========================================================
+node_modules/            # Node.js modules directory
+npm-debug.log*           # npm error logs
+yarn-error.log*          # Yarn error logs
+
+# ========================================================
+# Python Specific
+# ========================================================
+__pycache__/             # Python cache directory
+*.egg-info/              # Python egg metadata
+.env                     # Python environment variables
+
+# ========================================================
+# Logs and Dumps
+# ========================================================
+*.log                    # General log files
+*.gz                     # Compressed logs
+*.sql                    # Database dumps
+*.sqlite3                # SQLite database files
+
+# ========================================================
+# Git Specific
+# ========================================================
+*.orig                   # Merge conflict files
+*.rej                    # Rejected patch files
+*.patch                  # Patch files
+/composer.lock           # Dependency lock files
+
+# ========================================================
+# Secrets and Sensitive Files
+# ========================================================
+.env                     # Environment variables
+*.pem                    # SSL certificate private keys
+*.key                    # Private keys
+*.crt                    # Certificate files
+*.p12                    # PKCS12 files
+*.asc                    # GPG key exports
+*.gpg                    # GPG files
+
+# ========================================================
+# Miscellaneous
+# ========================================================
+/tmp/                    # Temporary files
+/out/                    # Output files
+/dist/                   # Distribution files
+*.bak                    # Backup files
+*.~*                     # Temporary editor files
