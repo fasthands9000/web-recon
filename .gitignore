@@ -1,91 +1,117 @@
-# ========================================================
-# Operating System Files
-# ========================================================
-.DS_Store                # macOS Finder files
-Thumbs.db                # Windows thumbnail cache
-ehthumbs.db              # Windows Explorer cache
-desktop.ini              # Windows Explorer config
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-# ========================================================
-# Temporary and Backup Files
-# ========================================================
-*.swp                    # Vim swap files
-*.swo                    # Vim temporary files
-*.bak                    # Backup files
-*.tmp                    # Temporary files
-*.~                      # Temporary files
-*.log                    # Log files
+# C extensions
+*.so
 
-# ========================================================
-# System-Specific Files
-# ========================================================
-/lost+found              # Linux lost+found directory
-*.lock                   # Lock files
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# ========================================================
-# Build and Compiled Files
-# ========================================================
-*.o                      # Compiled object files
-*.out                    # Compiled binary files
-*.class                  # Java class files
-*.pyc                    # Python compiled files
-*.pyo                    # Python optimized files
-*.so                     # Shared object files
+# PyInstaller
+# Usually contains binary executable files
+*.manifest
+*.spec
 
-# ========================================================
-# VS Code Specific
-# ========================================================
-.vscode/                 # VS Code settings folder (project-specific)
-*.code-workspace         # VS Code workspace settings
-*.history/               # Local History extension files (if installed)
-.settings/               # Eclipse workspace settings (rarely used with VS Code)
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
-# ========================================================
-# Node.js Specific
-# ========================================================
-node_modules/            # Node.js modules directory
-npm-debug.log*           # npm error logs
-yarn-error.log*          # Yarn error logs
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+nosetests.xml
+*.testrepository
+testresults/
 
-# ========================================================
-# Python Specific
-# ========================================================
-__pycache__/             # Python cache directory
-*.egg-info/              # Python egg metadata
-.env                     # Python environment variables
+# Translations
+*.mo
+*.pot
 
-# ========================================================
-# Logs and Dumps
-# ========================================================
-*.log                    # General log files
-*.gz                     # Compressed logs
-*.sql                    # Database dumps
-*.sqlite3                # SQLite database files
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
 
-# ========================================================
-# Git Specific
-# ========================================================
-*.orig                   # Merge conflict files
-*.rej                    # Rejected patch files
-*.patch                  # Patch files
-/composer.lock           # Dependency lock files
+# Flask stuff:
+instance/
+.webassets-cache
 
-# ========================================================
-# Secrets and Sensitive Files
-# ========================================================
-.env                     # Environment variables
-*.pem                    # SSL certificate private keys
-*.key                    # Private keys
-*.crt                    # Certificate files
-*.p12                    # PKCS12 files
-*.asc                    # GPG key exports
-*.gpg                    # GPG files
+# Scrapy stuff:
+.scrapy
 
-# ========================================================
-# Miscellaneous
-# ========================================================
-/tmp/                    # Temporary files
-/out/                    # Output files
-/dist/                   # Distribution files
-*.bak                    # Backup files
-*.~*                     # Temporary editor files
+# Sphinx documentation
+docs/_build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VSCode
+.vscode/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Pyre type checker
+.pyre/
+
+# Celery stuff
+celerybeat-schedule
+*.pid
+
+# SageMath parsed files:
+*.sage.py
+
+# Environments
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# VSCode settings
+.vscode/
+
+# Mac OS metadata
+.DS_Store
+
+# Windows Thumbs.db
+Thumbs.db
+
+# JetBrains IDEs (PyCharm, IntelliJ, etc.)
+.idea/
+*.idea/
