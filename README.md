@@ -1,4 +1,4 @@
-THE CODE IN THIS REPO IS FOR EDUCATIONAL PURPOSES ONLY.
+EDUCATIONAL PURPOSES ONLY.
 
 Read and understand any code before you run it - use at your own risk.
 
