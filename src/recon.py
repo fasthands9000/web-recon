@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 
 # Default settings
-DEFAULT_WORDLIST = "/usr/share/wordlists/SecLists/Discovery/Web-Content/raft-medium-words.txt"
+DEFAULT_WORDLIST = "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-medium-words.txt"
 DEFAULT_RESPONSE_CODES = "200,301,302,303,304,305,306,307"
 DEFAULT_THREADS = 10
 
@@ -40,7 +40,7 @@ def log_and_print(message, level="info"):
 
 # Display a warning at the start of the script
 def display_warning():
-    print(Fore.RED + "⚠️ WARNING: This tool is made for educational purposes only.")
+    print(Fore.RED + "⚠ WARNING: This tool is made for educational purposes only.")
     print("Use at your own risk. Unauthorized use against systems you don't own is illegal.")
     print("Stupid actions reap serious consequences." + Style.RESET_ALL)
 
@@ -52,7 +52,7 @@ def handle_interrupt(stage_name):
     print("[c] Continue this phase")
     choice = input("Enter your choice: ").strip().lower()
     if choice == "s":
-        log_and_print(f"⏭️ {stage_name} phase skipped.", "info")
+        log_and_print(f"⏭ {stage_name} phase skipped.", "info")
         return "skip"
     elif choice == "x":
         log_and_print(f"❌ {stage_name} phase exited by user.", "error")
@@ -68,7 +68,7 @@ def user_prompt(stage_name):
     print(f"\nOptions: [s] Skip | [x] Exit | [Enter] Continue")
     choice = input("What would you like to do? ").strip().lower()
     if choice == "s":
-        log_and_print(f"⏭️ {stage_name} phase skipped.", "info")
+        log_and_print(f"⏭ {stage_name} phase skipped.", "info")
         return False
     elif choice == "x":
         log_and_print(f"❌ {stage_name} phase exited by user.", "error")
@@ -117,7 +117,7 @@ def enumerate_directories(base_url, wordlist, response_codes, threads):
 # Spider the website for dynamic inputs
 def spider_website(base_url, delay=1, max_sites=10):
     try:
-        log_and_print(f"🕸️ Starting spidering for {base_url} with {delay}s delay...")
+        log_and_print(f"🕸 Starting spidering for {base_url} with {delay}s delay...")
         visited = set()
         dynamic_inputs = set()
         queue = [base_url]
@@ -190,11 +190,13 @@ def main():
     parser.add_argument("--response-codes", default=DEFAULT_RESPONSE_CODES, help="Comma-separated HTTP response codes to match")
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="Number of threads to use for ffuf")
     parser.add_argument("--delay", type=int, default=1, help="Delay between requests in seconds")
-    
+    parser.add_argument("-k", action="store_true", help="Use HTTP instead of HTTPS")
+
     args = parser.parse_args()
 
     display_warning()
     domain = sanitize_domain(args.domain)
+    protocol = "http" if args.k else "https"
 
     # Stage 1: Subdomain Enumeration
     if user_prompt("Subdomain Enumeration"):
@@ -207,12 +209,12 @@ def main():
 
     # Stage 3: Spidering
     if user_prompt("Spidering"):
-        base_url = f"https://{domain}"
+        base_url = f"{protocol}://{domain}"
         spider_website(base_url, delay=args.delay)
 
     # Stage 4: Header Scanning
     if user_prompt("Header Scanning"):
-        base_url = f"https://{domain}"
+        base_url = f"{protocol}://{domain}"
         endpoints = [base_url]  # Replace with a list of discovered URLs if available
         scan_headers(endpoints)
 
