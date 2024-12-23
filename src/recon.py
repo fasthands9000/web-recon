@@ -1,6 +1,5 @@
 import os
 import requests
-import socket
 import argparse
 import subprocess
 import logging
@@ -14,6 +13,7 @@ init()
 # Configure logging
 log_file = "recon.log"
 dynamic_inputs_file = "dynamic_inputs_burp.txt"
+headers_output_file = "headers.txt"
 logging.basicConfig(
     filename=log_file,
     level=logging.INFO,
@@ -27,8 +27,7 @@ DEFAULT_RESPONSE_CODES = "200,301,302,303,304,305,306,307"
 DEFAULT_THREADS = 10
 
 # Paths
-FFUF_PATH = "/opt/ffuf"
-SQLMAP_PATH = "/opt/sqlmap/sqlmap.py"
+FFUF_PATH = "/usr/bin/ffuf"
 
 # Real-time output and logging
 def log_and_print(message, level="info"):
@@ -80,31 +79,6 @@ def user_prompt(stage_name):
 def sanitize_domain(domain):
     parsed_url = urlparse(domain)
     return parsed_url.netloc if parsed_url.netloc else domain
-
-# Port Scanning with Nmap
-def scan_ports(domain):
-    try:
-        log_and_print(f"📡 Scanning ports for {domain}...")
-        nmap_cmd = ["nmap", "-p-", "-T4", "-oG", "-", domain]
-        result = subprocess.run(nmap_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            log_and_print(f"❌ Nmap failed: {result.stderr}", "error")
-            return []
-
-        open_ports = []
-        for line in result.stdout.splitlines():
-            if "/open/" in line:
-                open_ports.extend([x.split("/")[0] for x in line.split() if "/open/" in x])
-
-        if open_ports:
-            log_and_print(f"🔓 Open ports: {open_ports}")
-        else:
-            log_and_print("❌ No open ports found.", "error")
-
-        return open_ports
-    except Exception as e:
-        log_and_print(f"❌ Error during port scanning: {e}", "error")
-        return []
 
 # Subdomain Enumeration using ffuf
 def enumerate_subdomains(domain, wordlist, response_codes, threads):
@@ -188,20 +162,21 @@ def spider_website(base_url, delay=1, max_sites=10):
     except Exception as e:
         log_and_print(f"❌ Error during spidering: {e}", "error")
 
-# Run SQLMap for SQL injection testing
-def run_sqlmap(base_url):
+# Scan headers for the found endpoints
+def scan_headers(endpoints):
     try:
-        log_and_print(f"🛠️ Starting SQLMap on {base_url}...")
-        if not os.path.exists(SQLMAP_PATH):
-            raise FileNotFoundError(f"SQLMap not found at {SQLMAP_PATH}")
-        sqlmap_cmd = [SQLMAP_PATH, "-u", base_url, "--batch", "--level=2", "--risk=2"]
-        result = subprocess.run(sqlmap_cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            log_and_print(f"🛡️ SQLMap results:\n{result.stdout}")
-        else:
-            log_and_print(f"❌ SQLMap failed: {result.stderr}", "error")
+        log_and_print(f"🔍 Scanning headers for endpoints...")
+        with open(headers_output_file, "w") as f:
+            for url in endpoints:
+                try:
+                    response = requests.head(url, timeout=5)
+                    headers = response.headers
+                    log_and_print(f"📋 Headers for {url}: {headers}")
+                    f.write(f"Headers for {url}:\n{headers}\n\n")
+                except Exception as e:
+                    log_and_print(f"❌ Failed to fetch headers for {url}: {e}", "error")
     except Exception as e:
-        log_and_print(f"❌ Error running SQLMap: {e}", "error")
+        log_and_print(f"❌ Error during header scanning: {e}", "error")
 
 # Main script
 def main():
@@ -221,28 +196,25 @@ def main():
     display_warning()
     domain = sanitize_domain(args.domain)
 
-    # Stage 1: Port Scanning
-    if user_prompt("Port Scanning"):
-        scan_ports(domain)
-
-    # Stage 2: Subdomain Enumeration
+    # Stage 1: Subdomain Enumeration
     if user_prompt("Subdomain Enumeration"):
         enumerate_subdomains(domain, args.wordlist, args.response_codes, args.threads)
 
-    # Stage 3: Directory Enumeration
+    # Stage 2: Directory Enumeration
     if user_prompt("Directory Enumeration"):
         base_url = f"https://{domain}"
         enumerate_directories(base_url, args.wordlist, args.response_codes, args.threads)
 
-    # Stage 4: Spidering
+    # Stage 3: Spidering
     if user_prompt("Spidering"):
         base_url = f"https://{domain}"
         spider_website(base_url, delay=args.delay)
 
-    # Stage 5: SQLMap Testing
-    if user_prompt("SQLMap Testing"):
+    # Stage 4: Header Scanning
+    if user_prompt("Header Scanning"):
         base_url = f"https://{domain}"
-        run_sqlmap(base_url)
+        endpoints = [base_url]  # Replace with a list of discovered URLs if available
+        scan_headers(endpoints)
 
 if __name__ == "__main__":
     log_and_print("🔥 [*] Recon script started 🔥")
