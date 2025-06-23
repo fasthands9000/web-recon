@@ -1,228 +1,449 @@
-import os
-import requests
+#!/usr/bin/env python3
+"""
+recon_plus.py
+--------------
+Single‑VM reconnaissance helper for private bug‑bounty engagements.
+Now with *modular* opt‑in scans and tag‑driven CLI.
+
+Usage examples
+~~~~~~~~~~~~~~
+# run basic phases only (sub/dir/vhost/spider/headers)
+$ ./recon_plus.py example.com
+
+# run everything we support
+$ ./recon_plus.py example.com --scans all
+
+# pick and mix specific modules
+$ ./recon_plus.py example.com --scans linter,js,tls
+
+# list available scan tags
+$ ./recon_plus.py --help-scans
+
+Design notes
+~~~~~~~~~~~~
+* **All new phases are optional** (select via `--scans`).
+* **Rate‑limit & auth tests** purposely *omitted* per user request.
+* External helpers (gowitness, subjack, nuclei, sslscan) are invoked only if
+  present in `$PATH`; otherwise, we log a warning and continue.
+* Runs happily on a single VM – no distributed queues or heavy infra.
+"""
+
+from __future__ import annotations
+
 import argparse
-import subprocess
+import hashlib
+import json
 import logging
-from urllib.parse import urlparse, urljoin
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from textwrap import dedent
+from time import sleep
+from typing import Iterable, List
+from urllib.parse import urljoin, urlparse
+
+import requests
 from bs4 import BeautifulSoup
 from colorama import Fore, Style, init
 
-# Initialize colorama for colorized output
-init()
+# ---- constants ----------------------------------------------------------------
 
-# Configure logging
-log_file = "recon.log"
-dynamic_inputs_file = "dynamic_inputs_burp.txt"
-headers_output_file = "headers.txt"
-logging.basicConfig(
-    filename=log_file,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+FFUF = "/usr/bin/ffuf"
+DEFAULT_WORDLIST = (
+    "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-medium-words.txt"
 )
+DEFAULT_VHOST_WORDLIST = (
+    "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-110000.txt"
+)
+DEFAULT_CODES = "200,301,302,401,403"
+LOGFILE = "recon.log"
+SEC_HEADERS = {
+    "content-security-policy",
+    "x-frame-options",
+    "strict-transport-security",
+    "x-xss-protection",
+    "x-content-type-options",
+}
 
-# Default settings
-DEFAULT_WORDLIST = "/usr/share/wordlists/seclists/Discovery/Web-Content/raft-medium-words.txt"
-DEFAULT_RESPONSE_CODES = "200,301,302,303,304,305,306,307"
-DEFAULT_THREADS = 10
+init(autoreset=True)
 
-# Paths
-FFUF_PATH = "/usr/bin/ffuf"
+# ---- helpers ------------------------------------------------------------------
 
-# Real-time output and logging
-def log_and_print(message, level="info"):
-    if level == "info":
-        print(Fore.GREEN + message + Style.RESET_ALL)
-        logging.info(message)
-    elif level == "error":
-        print(Fore.RED + message + Style.RESET_ALL)
-        logging.error(message)
 
-# Display a warning at the start of the script
-def display_warning():
-    print(Fore.RED + "⚠ WARNING: This tool is made for educational purposes only.")
-    print("Use at your own risk. Unauthorized use against systems you don't own is illegal.")
-    print("Stupid actions reap serious consequences." + Style.RESET_ALL)
+def find_tool(name: str) -> str | None:
+    return shutil.which(name) if (import shutil) is None else shutil.which(name)
 
-# Handle user interruption gracefully
-def handle_interrupt(stage_name):
-    print(Fore.YELLOW + f"\n🛑 {stage_name} interrupted! What would you like to do? " + Style.RESET_ALL)
-    print("[s] Skip this phase")
-    print("[x] Exit the script")
-    print("[c] Continue this phase")
-    choice = input("Enter your choice: ").strip().lower()
-    if choice == "s":
-        log_and_print(f"⏭ {stage_name} phase skipped.", "info")
-        return "skip"
-    elif choice == "x":
-        log_and_print(f"❌ {stage_name} phase exited by user.", "error")
-        exit(0)
-    elif choice == "c":
-        log_and_print(f"🔄 Resuming {stage_name} phase...", "info")
-        return "continue"
-    return "continue"
 
-# Prompt user before each phase
-def user_prompt(stage_name):
-    log_and_print(f"🚦 Starting {stage_name} phase.")
-    print(f"\nOptions: [s] Skip | [x] Exit | [Enter] Continue")
-    choice = input("What would you like to do? ").strip().lower()
-    if choice == "s":
-        log_and_print(f"⏭ {stage_name} phase skipped.", "info")
-        return False
-    elif choice == "x":
-        log_and_print(f"❌ {stage_name} phase exited by user.", "error")
-        exit(0)
-    return True
+def colour(msg: str, lvl: int) -> str:
+    return {
+        logging.INFO: Fore.GREEN,
+        logging.WARNING: Fore.YELLOW,
+        logging.ERROR: Fore.RED,
+    }.get(lvl, "") + msg + Style.RESET_ALL
 
-# Sanitize domain input
-def sanitize_domain(domain):
-    parsed_url = urlparse(domain)
-    return parsed_url.netloc if parsed_url.netloc else domain
 
-# Subdomain Enumeration using ffuf
-def enumerate_subdomains(domain, wordlist, response_codes, threads):
+def log(msg: str, lvl: int = logging.INFO) -> None:
+    print(colour(msg, lvl))
+    logging.log(lvl, msg)
+
+
+def run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess[str]:
+    """Execute a command with live stdout/stderr passthrough."""
+    log("$ " + " ".join(map(shlex.quote, cmd)))
     try:
-        log_and_print(f"🔍 Enumerating subdomains for {domain} using ffuf with {threads} threads...")
-        ffuf_cmd = [
-            FFUF_PATH,
-            "-u", f"https://FUZZ.{domain}",
-            "-w", wordlist,
-            "-mc", response_codes,
-            "-t", str(threads),
-            "-v"
-        ]
-        subprocess.run(ffuf_cmd)  # Live output with no capture for visibility
+        return subprocess.run(cmd, check=check)
     except KeyboardInterrupt:
-        if handle_interrupt("Subdomain Enumeration") == "skip":
-            return []
+        log("User cancelled – exiting.", logging.WARNING)
+        sys.exit(130)
 
-# Directory Enumeration using ffuf
-def enumerate_directories(base_url, wordlist, response_codes, threads):
-    try:
-        log_and_print(f"🔍 Enumerating directories for {base_url} using ffuf with {threads} threads...")
-        ffuf_cmd = [
-            FFUF_PATH,
-            "-u", f"{base_url}/FUZZ",
-            "-w", wordlist,
-            "-mc", response_codes,
-            "-t", str(threads),
-            "-v"
+
+@dataclass
+class Config:
+    domain: str
+    scheme: str
+    wordlist: str
+    vhost_wordlist: str
+    codes: str
+    threads: int
+    delay: int
+    scans: list[str]
+    interactive: bool
+
+    @property
+    def root(self) -> str:
+        return f"{self.scheme}://{self.domain}"
+
+
+# ---- ffuf wrappers ------------------------------------------------------------
+
+
+def ffuf(url_tmpl: str, wordlist: str, cfg: Config, *extra: str) -> None:
+    run(
+        [
+            FFUF,
+            "-u",
+            url_tmpl,
+            "-w",
+            wordlist,
+            "-t",
+            str(cfg.threads),
+            "-mc",
+            cfg.codes,
+            "-v",
+            *extra,
         ]
-        subprocess.run(ffuf_cmd)  # Live output with no capture for visibility
-    except KeyboardInterrupt:
-        if handle_interrupt("Directory Enumeration") == "skip":
-            return []
-
-# Spider the website for dynamic inputs
-def spider_website(base_url, delay=1, max_sites=10):
-    try:
-        log_and_print(f"🕸 Starting spidering for {base_url} with {delay}s delay...")
-        visited = set()
-        dynamic_inputs = set()
-        queue = [base_url]
-        site_count = 0
-
-        parsed_base = urlparse(base_url)
-        base_scope = f"{parsed_base.scheme}://{parsed_base.netloc}"
-
-        with open(dynamic_inputs_file, "w") as f:
-            while queue:
-                if site_count >= max_sites:
-                    log_and_print(f"🛑 Reached the maximum of {max_sites} sites. Moving to the next phase.")
-                    break
-
-                url = queue.pop(0)
-                if url in visited:
-                    continue
-                visited.add(url)
-                site_count += 1
-
-                try:
-                    response = requests.get(url, timeout=5)
-                    soup = BeautifulSoup(response.text, "html.parser")
-
-                    for link in soup.find_all("a", href=True):
-                        full_url = urljoin(base_scope, link["href"])
-                        if not full_url.startswith(base_scope):
-                            continue
-                        if full_url not in visited:
-                            queue.append(full_url)
-
-                        if "?" in full_url and full_url not in dynamic_inputs:
-                            log_and_print(f"📝 Found dynamic input: {full_url}")
-                            dynamic_inputs.add(full_url)
-                            f.write(full_url + "\n")
-                except KeyboardInterrupt:
-                    if handle_interrupt("Spidering") == "skip":
-                        return
-                except Exception as e:
-                    log_and_print(f"❌ Error fetching {url}: {e}", "error")
-
-    except Exception as e:
-        log_and_print(f"❌ Error during spidering: {e}", "error")
-
-# Scan headers for the found endpoints
-def scan_headers(endpoints):
-    try:
-        log_and_print(f"🔍 Scanning headers for endpoints...")
-        with open(headers_output_file, "w") as f:
-            for url in endpoints:
-                try:
-                    response = requests.head(url, timeout=5)
-                    headers = response.headers
-                    log_and_print(f"📋 Headers for {url}: {headers}")
-                    f.write(f"Headers for {url}:\n{headers}\n\n")
-                except Exception as e:
-                    log_and_print(f"❌ Failed to fetch headers for {url}: {e}", "error")
-    except Exception as e:
-        log_and_print(f"❌ Error during header scanning: {e}", "error")
-
-# Main script
-def main():
-    parser = argparse.ArgumentParser(
-        description="Bug bounty recon script",
-        formatter_class=argparse.RawTextHelpFormatter,
     )
 
-    parser.add_argument("domain", help="Target domain (e.g., example.com or https://example.com)")
-    parser.add_argument("--wordlist", default=DEFAULT_WORDLIST, help="Path to the wordlist (default: SecLists raft-medium-words.txt)")
-    parser.add_argument("--response-codes", default=DEFAULT_RESPONSE_CODES, help="Comma-separated HTTP response codes to match")
-    parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="Number of threads to use for ffuf")
-    parser.add_argument("--delay", type=int, default=1, help="Delay between requests in seconds")
-    parser.add_argument("-k", action="store_true", help="Use HTTP instead of HTTPS")
 
-    args = parser.parse_args()
+# Phase functions ---------------------------------------------------------------
 
-    display_warning()
-    domain = sanitize_domain(args.domain)
-    protocol = "http" if args.k else "https"
+def subdomain_scan(cfg: Config) -> None:
+    log("[*] Subdomain enumeration")
+    ffuf(f"{cfg.scheme}://FUZZ.{cfg.domain}", cfg.wordlist, cfg)
 
-    # Stage 1: Subdomain Enumeration
-    if user_prompt("Subdomain Enumeration"):
-        enumerate_subdomains(domain, args.wordlist, args.response_codes, args.threads)
 
-    # Stage 2: Directory Enumeration
-    if user_prompt("Directory Enumeration"):
-        base_url = f"https://{domain}"
-        enumerate_directories(base_url, args.wordlist, args.response_codes, args.threads)
+def dir_scan(cfg: Config) -> None:
+    log("[*] Directory enumeration")
+    ffuf(f"{cfg.root}/FUZZ", cfg.wordlist, cfg)
 
-    # Stage 3: Spidering
-    if user_prompt("Spidering"):
-        base_url = f"{protocol}://{domain}"
-        spider_website(base_url, delay=args.delay)
 
-    # Stage 4: Header Scanning
-    if user_prompt("Header Scanning"):
-        base_url = f"{protocol}://{domain}"
-        endpoints = [base_url]  # Replace with a list of discovered URLs if available
-        scan_headers(endpoints)
+def vhost_scan(cfg: Config) -> None:
+    log("[*] V‑host enumeration")
+    try:
+        ip = socket.gethostbyname(cfg.domain)
+    except Exception as e:  # noqa: BLE001
+        log(f"[!] DNS failed: {e}", logging.ERROR)
+        return
+    ffuf(
+        f"http://{ip}/",
+        cfg.vhost_wordlist,
+        cfg,
+        "-H",
+        f"Host: FUZZ.{cfg.domain}",
+        "-fs",
+        "4242",
+    )
+
+
+def spider(cfg: Config, max_sites: int = 200) -> list[str]:
+    log("[*] Spidering for parameterised URLs…")
+    pending = {cfg.root}
+    visited: set[str] = set()
+    found: list[str] = []
+    sess = requests.Session()
+
+    while pending and len(visited) < max_sites:
+        url = pending.pop()
+        visited.add(url)
+        try:
+            r = sess.get(url, timeout=6)
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tag in soup.find_all("a", href=True):
+                u = urljoin(cfg.root, tag["href"])
+                if u.startswith(cfg.root) and u not in visited:
+                    pending.add(u)
+                if "?" in u:
+                    found.append(u)
+                    log(f"    [+] {u}")
+        except Exception as e:  # noqa: BLE001
+            log(f"    [!] {e}", logging.WARNING)
+    Path("dynamic_inputs_burp.txt").write_text("\n".join(found))
+    return found
+
+
+def header_scan(urls: Iterable[str], cfg: Config) -> None:
+    log("[*] Header scan (HEAD requests)")
+
+    def fetch(u: str):
+        try:
+            return u, requests.head(u, timeout=4).headers
+        except Exception:
+            return u, None
+
+    with ThreadPoolExecutor(cfg.threads) as pool, open("headers.txt", "w") as fp:
+        for url, hdr in pool.map(fetch, urls):
+            if hdr:
+                fp.write(f"{url}\n{json.dumps(dict(hdr), indent=2)}\n\n")
+
+
+# ---- optional modules ---------------------------------------------------------
+
+
+def linter_scan(urls: Iterable[str]) -> None:
+    log("[*] Security‑header linter")
+    for url in urls:
+        try:
+            hdr = requests.head(url, timeout=4).headers
+            missing = SEC_HEADERS - {h.lower() for h in hdr}
+            if missing:
+                log(f"    [!] {url} missing: {', '.join(sorted(missing))}", logging.WARNING)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def screenshot_scan(cfg: Config) -> None:
+    tool = shutil.which("gowitness") or shutil.which("aquatone")
+    if not tool:
+        log("[!] gowitness/aquatone not found – skipping", logging.WARNING)
+        return
+    log("[*] Screenshot + tech fingerprint")
+    if "gowitness" in tool:
+        run([tool, "single", "-u", cfg.root])
+    else:
+        run([tool, "--url", cfg.root])
+
+
+def js_secrets_scan(urls: Iterable[str], cfg: Config) -> None:
+    log("[*] JS endpoint & secret grep")
+    patt = re.compile(r"(?i)(api_key|secret|token|bearer)[:=]\s*[\'\"]?([A-Za-z0-9\-_]{8,})")
+    sess = requests.Session()
+    for u in urls:
+        if u.endswith(".js"):
+            try:
+                r = sess.get(u, timeout=6)
+                for m in patt.finditer(r.text):
+                    log(f"    [+] {u}: {m.group(0)[:60]}…", logging.INFO)
+            except Exception:
+                pass
+
+
+def tls_scan(cfg: Config) -> None:
+    tool = shutil.which("sslscan") or shutil.which("sslyze")
+    if not tool:
+        log("[!] sslscan/sslyze not in PATH – skipping", logging.WARNING)
+        return
+    log("[*] TLS / cipher audit")
+    if "sslscan" in tool:
+        run([tool, cfg.domain])
+    else:
+        run([tool, "--regular", cfg.domain])
+
+
+def takeover_scan(cfg: Config) -> None:
+    tool = shutil.which("subjack")
+    if not tool:
+        log("[!] subjack not found – skipping takeover check", logging.WARNING)
+        return
+    log("[*] Sub‑domain takeover heuristics")
+    subout = Path(tempfile.mktemp())
+    run([
+        tool,
+        "-d",
+        cfg.domain,
+        "-w",
+        DEFAULT_VHOST_WORDLIST,
+        "-o",
+        str(subout),
+        "-ssl",
+    ])
+    if subout.exists():
+        log(subout.read_text())
+
+
+def nuclei_scan(targets: Iterable[str]) -> None:
+    tool = shutil.which("nuclei")
+    if not tool:
+        log("[!] nuclei not installed – skipping", logging.WARNING)
+        return
+    log("[*] Nuclei template run")
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+        for t in targets:
+            f.write(t + "\n")
+    run([tool, "-l", f.name, "-silent"])
+
+
+def cors_scan(urls: Iterable[str]) -> None:
+    log("[*] CORS mis‑config probe")
+    sess = requests.Session()
+    evil = "https://evil.com"
+    for u in urls:
+        try:
+            r = sess.get(u, headers={"Origin": evil}, timeout=4)
+            if r.headers.get("Access-Control-Allow-Origin") in ("*", evil):
+                log(f"    [!] Potential CORS issue at {u}", logging.WARNING)
+        except Exception:
+            pass
+
+
+def diff_scan(urls: Iterable[str]) -> None:
+    log("[*] Baseline diffing")
+    sess = requests.Session()
+    for u in urls:
+        try:
+            a = sess.get(u, timeout=4).text
+            sleep(1)
+            b = sess.get(u, timeout=4).text
+            if hashlib.md5(a.encode()).hexdigest() != hashlib.md5(b.encode()).hexdigest():
+                log(f"    [+] {u} response changed between requests", logging.INFO)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def burp_blind_scan(urls: Iterable[str]) -> None:
+    if "COLLABORATOR_PAYLOAD" not in os.environ:
+        log("[!] Set COLLABORATOR_PAYLOAD env var to enable blind scans", logging.WARNING)
+        return
+    payload = os.environ["COLLABORATOR_PAYLOAD"]
+    log("[*] Burp Collaborator hooks – injecting payload")
+    for u in urls:
+        try:
+            parts = list(urlparse(u))
+            if "?" in parts[4]:
+                parts[4] += f"&ping={payload}"
+            else:
+                parts[4] = f"ping={payload}"
+            new = urlparse.urlunparse(parts)  # type: ignore[attr-defined]
+            requests.get(new, timeout=3)
+        except Exception:
+            pass
+
+# ------------------------------------------
+# Available scan mapping (tag -> callable)
+SCAN_FUNCS = {
+    "sub": subdomain_scan,
+    "dir": dir_scan,
+    "vhost": vhost_scan,
+    "spider": spider,
+    "headers": header_scan,
+    # optionals
+    "linter": linter_scan,
+    "screenshot": screenshot_scan,
+    "js": js_secrets_scan,
+    "tls": tls_scan,
+    "takeover": takeover_scan,
+    "nuclei": nuclei_scan,
+    "cors": cors_scan,
+    "diff": diff_scan,
+    "burp": burp_blind_scan,
+}
+BASIC_ORDER = ["sub", "dir", "vhost", "spider", "headers"]
+
+# ---- CLI / main ---------------------------------------------------------------
+
+
+def build_cfg() -> Config:
+    p = argparse.ArgumentParser(description="modular single‑VM recon helper")
+    p.add_argument("domain")
+    p.add_argument("-k", "--insecure", action="store_true", help="Use HTTP")
+    p.add_argument("-w", "--wordlist", default=DEFAULT_WORDLIST)
+    p.add_argument("--vhost-wordlist", default=DEFAULT_VHOST_WORDLIST)
+    p.add_argument("--codes", default=DEFAULT_CODES)
+    p.add_argument("-t", "--threads", type=int, default=10)
+    p.add_argument("--delay", type=int, default=1)
+    p.add_argument("-i", "--interactive", action="store_true")
+    p.add_argument("--scans", default="basic", help="Comma‑sep list or 'all' or 'basic'")
+    p.add_argument("--help-scans", action="store_true", help="List available scan tags and exit")
+    args = p.parse_args()
+
+    if args.help_scans:
+        tags = sorted(SCAN_FUNCS)
+        print("Available tags:\n" + "\n".join(f"  - {t}" for t in tags))
+        sys.exit(0)
+
+    dom = urlparse(args.domain if "://" in args.domain else f"https://{args.domain}")
+    scheme = "http" if args.insecure else "https"
+    selected = (
+        BASIC_ORDER if args.scans == "basic" else list(SCAN_FUNCS) if args.scans == "all" else args.scans.split(",")
+    )
+
+    return Config(
+        domain=dom.netloc or dom.path,
+        scheme=scheme,
+        wordlist=args.wordlist,
+        vhost_wordlist=args.vhost_wordlist,
+        codes=args.codes,
+        threads=args.threads,
+        delay=args.delay,
+        scans=selected,
+        interactive=args.interactive,
+    )
+
+
+def ask(cfg: Config, tag: str) -> bool:
+    if not cfg.interactive:
+        return True
+    ans = input(f"{Fore.CYAN}[?] Run {tag} scan? [Y/n]{Style.RESET_ALL} ").lower()
+    return ans != "n"
+
+
+def main() -> None:
+    logging.basicConfig(filename=LOGFILE, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    cfg = build_cfg()
+    log("[+] Recon started")
+
+    # Spider produces URLs needed by later modules; collect accordingly
+    cached_urls: list[str] = []
+
+    for tag in BASIC_ORDER + [t for t in cfg.scans if t not in BASIC_ORDER]:
+        if tag not in cfg.scans:
+            continue
+        fn = SCAN_FUNCS[tag]
+        if not ask(cfg, tag):
+            continue
+        try:
+            if tag == "spider":
+                cached_urls = fn(cfg)  # type: ignore[arg-type]
+            elif tag in {"headers", "linter", "js", "cors", "diff", "burp", "nuclei"}:
+                fn(cached_urls or [cfg.root])  # type: ignore[arg-type]
+            elif tag == "nuclei":
+                fn([cfg.root] + cached_urls)  # type: ignore[arg-type]
+            else:
+                fn(cfg)
+        except Exception as e:  # noqa: BLE001
+            log(f"[!] {tag} scan error: {e}", logging.ERROR)
+
+    log("[+] Recon finished")
+
 
 if __name__ == "__main__":
-    log_and_print("🔥 [*] Recon script started 🔥")
     try:
         main()
     except KeyboardInterrupt:
-        handle_interrupt("Main Script")
-    finally:
-        log_and_print("🎉 Recon script completed! 🎉")
+        log("Interrupted – exiting.", logging.WARNING)

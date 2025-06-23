@@ -1,117 +1,48 @@
-# Byte-compiled / optimized / DLL files
+# ── Python bytecode & compiled ──────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
-.Python
+# ── Build / distribution ───────────────────────────────────────────
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-# Usually contains binary executable files
+wheels/
 *.manifest
-*.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-nosetests.xml
-*.testrepository
-testresults/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# PyCharm
-.idea/
-*.iml
-*.iws
-*.ipr
-
-# VSCode
-.vscode/
-
-# Environments
+# ── Virtual environments / PEP 582 ─────────────────────────────────
 .env
 .venv
 env/
 venv/
-ENV/
-env.bak/
-venv.bak/
+__pypackages__/
 
-# Pyre type checker
-.pyre/
-
-# Celery stuff
-celerybeat-schedule
-*.pid
-
-# SageMath parsed files:
-*.sage.py
-
-# Environments
+# ── Tool & test caches ─────────────────────────────────────────────
+.pytest_cache/
+.nox/
+.tox/
+.hypothesis/
 .mypy_cache/
-.dmypy.json
 .pyre/
 .pytype/
+.ruff_cache/
+coverage.xml
+*.cover
+*.py,cover
+.dmypy.json
 
-# VSCode settings
+# ── IDEs & editors ─────────────────────────────────────────────────
 .vscode/
-
-# Mac OS metadata
-.DS_Store
-
-# Windows Thumbs.db
-Thumbs.db
-
-# JetBrains IDEs (PyCharm, IntelliJ, etc.)
 .idea/
-*.idea/
+
+# ── Framework-specific (uncomment if used) ─────────────────────────
+# db.sqlite3
+# instance/
+# .scrapy
+# docs/_build/
+
+# ── OS / misc ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
