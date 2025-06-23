@@ -323,5 +323,109 @@ BASIC_ORDER = ["sub", "dir", "vhost", "spider", "headers"]
 # ── CLI & main ──────────────────────────────────────────────────────────────
 
 def build_cfg() -> Config:
-    p = argparse.ArgumentParser(description="Modular single‑VM recon helper")
-    p.add_argument("
+    parser = argparse.ArgumentParser(
+        prog="recon_plus",
+        description="Modular single‑VM recon helper. Use --help-scans to list tags.",
+    )
+
+    # positional
+    parser.add_argument("domain", help="example.com or https://example.com")
+
+    # flags
+    parser.add_argument("-k", "--insecure", action="store_true", help="Use HTTP (skip TLS)")
+    parser.add_argument("-w", "--wordlist", default=DEFAULT_WORDLIST)
+    parser.add_argument("--vhost-wordlist", default=DEFAULT_VHOST_WORDLIST)
+    parser.add_argument("--codes", default=DEFAULT_CODES, help="ffuf match codes")
+    parser.add_argument("-t", "--threads", type=int, default=10)
+    parser.add_argument("--delay", type=int, default=1, help="Spider delay seconds")
+    parser.add_argument("--interactive", "-i", action="store_true", help="Prompt before each tag")
+
+    # scan selection
+    parser.add_argument(
+        "--scans",
+        default="basic",
+        help="Comma‑sep tags, or 'all', or 'basic' (sub,dir,vhost,spider,headers)",
+    )
+    parser.add_argument("--help-scans", action="store_true", help="List all scan tags and exit")
+
+    args = parser.parse_args()
+
+    if args.help_scans:
+        print("Available scan tags:")
+        for tag in sorted(SCAN_FUNCS):
+            print(f"  - {tag}")
+        sys.exit(0)
+
+    domain_url = args.domain if "://" in args.domain else f"https://{args.domain}"
+    parsed = urlparse(domain_url)
+
+    # determine which scans to run
+    if args.scans == "all":
+        selected = list(SCAN_FUNCS)
+    elif args.scans == "basic":
+        selected = BASIC_ORDER.copy()
+    else:
+        selected = [s.strip() for s in args.scans.split(",") if s.strip() in SCAN_FUNCS]
+
+    return Config(
+        domain=parsed.netloc or parsed.path,
+        scheme="http" if args.insecure else "https",
+        wordlist=args.wordlist,
+        vhost_wordlist=args.vhost_wordlist,
+        codes=args.codes,
+        threads=args.threads,
+        delay=args.delay,
+        scans=selected,
+        interactive=args.interactive,
+    )
+
+
+def ask(cfg: Config, tag: str) -> bool:
+    if not cfg.interactive:
+        return True
+    resp = input(f"{Fore.CYAN}[?] Run {tag} scan? [Y/n]{Style.RESET_ALL} ").strip().lower()
+    return resp != "n"
+
+
+def main() -> None:
+    logging.basicConfig(
+        filename=LOGFILE,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    cfg = build_cfg()
+    log("[+] Recon started")
+
+    cached_urls: list[str] = []
+
+    # Keep execution order: BASIC_ORDER first, then any additional chosen tags
+    ordered_tags = BASIC_ORDER + [t for t in cfg.scans if t not in BASIC_ORDER]
+
+    for tag in ordered_tags:
+        if tag not in cfg.scans:
+            continue
+        if not ask(cfg, tag):
+            continue
+
+        fn = SCAN_FUNCS[tag]
+        try:
+            if tag == "spider":
+                cached_urls = fn(cfg)  # type: ignore[arg-type]
+            elif tag in {"headers", "linter", "js", "cors", "diff", "burp"}:
+                fn(cached_urls or [cfg.root], cfg) if tag in {"headers"} else fn(cached_urls or [cfg.root])
+            elif tag == "nuclei":
+                fn(cached_urls or [cfg.root])
+            else:
+                fn(cfg)
+        except Exception as e:  # noqa: BLE001
+            log(f"[!] {tag} scan error: {e}", logging.ERROR)
+
+    log("[+] Recon finished")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("Interrupted – exiting.", logging.WARNING)
